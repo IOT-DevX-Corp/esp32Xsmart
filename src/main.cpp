@@ -1,6 +1,6 @@
 // Servo and motor control pins for ESP32
 #include <ESP32Servo.h>
-
+#include <Arduino.h>
 // Servo pins - using GPIO numbers
 #define CHAMBER_SERVO_PIN 18  // GPIO18 for rotation servo
 #define DISPENSE_SERVO_PIN 19 // GPIO19 for dispense servo
@@ -132,4 +132,25 @@ void testActuators()
   // moveTrayForward(); // Move tray forward to collect pill
   // delay(2000);
   // moveTrayBackward(); // Return tray to starting position
+}
+
+void setup()
+{
+  Serial.begin(115200);
+  Serial.println("Initializing SmartPill-Dose Actuators...");
+
+  // Initialize servos and motor
+  initializeActuators();
+
+  // Example: Rotate to compartment 3, dispense a pill, and move the tray
+  rotateChamberTo(3); // Rotate to compartment 3
+  dispensePill();     // Dispense the pill
+  moveTrayForward();  // Move the tray forward
+  delay(2000);        // Wait for 2 seconds
+  moveTrayBackward(); // Move the tray backward
+}
+
+void loop()
+{
+  // Add your logic here to control the actuators based on Firebase data or other inputs
 }
