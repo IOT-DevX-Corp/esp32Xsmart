@@ -10,9 +10,16 @@
 #define MOTOR_BACKWARD_PIN 26 // GPIO26 for motor backward
 #define MOTOR_ENABLE_PIN 27   // GPIO27 for motor PWM control
 
+// IR sensor pin
+#define IR_SENSOR_PIN 23 // GPIO23 for IR sensor input
+
 // Servo objects
 Servo chamberServo;
 Servo dispenseServo;
+
+// IR sensor state
+bool pillDetected = false;
+bool previousPillState = false;
 
 // Function to initialize servos and motor
 void initializeActuators()
@@ -43,7 +50,10 @@ void initializeActuators()
   digitalWrite(MOTOR_BACKWARD_PIN, LOW);
   analogWrite(MOTOR_ENABLE_PIN, 0);
 
-  Serial.println("Actuators initialized");
+  // Configure IR sensor pin as input
+  pinMode(IR_SENSOR_PIN, INPUT);
+
+  Serial.println("Actuators and sensors initialized");
 }
 
 // Function to rotate the chamber to the desired compartment
@@ -75,6 +85,30 @@ void dispensePill()
   delay(1000);             // Wait for the pill to drop
   dispenseServo.write(90); // Return to neutral position
   delay(500);              // Wait for the servo to stabilize
+
+  // Wait for pill detection
+  unsigned long startTime = millis();
+  unsigned long timeout = 5000; // 5-second timeout
+  bool pillDetected = false;
+
+  Serial.println("Waiting for pill detection...");
+
+  while (millis() - startTime < timeout)
+  {
+    // Read IR sensor (adjust logic based on your sensor type)
+    if (digitalRead(IR_SENSOR_PIN) == LOW)
+    { // Assuming LOW means object detected
+      pillDetected = true;
+      Serial.println("Pill detected by IR sensor!");
+      break;
+    }
+    delay(50);
+  }
+
+  if (!pillDetected)
+  {
+    Serial.println("Warning: Pill not detected after dispensing!");
+  }
 }
 
 // Function to move the tray forward
@@ -99,10 +133,53 @@ void moveTrayBackward()
   analogWrite(MOTOR_ENABLE_PIN, 0);   // Stop the motor
 }
 
-// Function to move the tray back and forth as a test sequence
+// Function to check the IR sensor
+bool checkIRSensor()
+{
+  // Read IR sensor (adjust logic based on your sensor type)
+  // Most IR sensors output LOW when an object is detected
+  return (digitalRead(IR_SENSOR_PIN) == LOW);
+}
+
+// Function to test the IR sensor
+void testIRSensor()
+{
+  Serial.println("IR Sensor Test: Please place and remove an object in front of the sensor");
+
+  unsigned long startTime = millis();
+  unsigned long testDuration = 10000; // 10-second test
+
+  while (millis() - startTime < testDuration)
+  {
+    bool currentState = checkIRSensor();
+
+    // State change detection
+    if (currentState != previousPillState)
+    {
+      if (currentState)
+      {
+        Serial.println("Object detected!");
+      }
+      else
+      {
+        Serial.println("Object removed!");
+      }
+      previousPillState = currentState;
+    }
+
+    delay(100); // Short delay to prevent too frequent readings
+  }
+
+  Serial.println("IR sensor test completed.");
+}
+
+// Test all actuators and sensors
 void testActuators()
 {
   Serial.println("Starting actuator test sequence...");
+
+  // Test IR sensor first
+  testIRSensor();
 
   // Test chamber rotation
   for (int i = 0; i <= 5; i++)
@@ -125,32 +202,43 @@ void testActuators()
   moveTrayBackward();
 
   Serial.println("Test sequence completed");
-  // ** Example usage:
-  // rotateChamberTo(medications[i].chamber); // Rotate to the correct chamber
-  // delay(1000);
-  // dispensePill();    // Dispense the pill
-  // moveTrayForward(); // Move tray forward to collect pill
-  // delay(2000);
-  // moveTrayBackward(); // Return tray to starting position
 }
 
 void setup()
 {
   Serial.begin(115200);
-  Serial.println("Initializing SmartPill-Dose Actuators...");
+  Serial.println("Initializing SmartPill-Dose System...");
 
-  // Initialize servos and motor
+  // Initialize servos, motor, and sensors
   initializeActuators();
 
-  // Example: Rotate to compartment 3, dispense a pill, and move the tray
-  rotateChamberTo(3); // Rotate to compartment 3
-  dispensePill();     // Dispense the pill
-  moveTrayForward();  // Move the tray forward
-  delay(2000);        // Wait for 2 seconds
-  moveTrayBackward(); // Move the tray backward
+  // Run test sequence
+  testActuators();
 }
 
 void loop()
 {
+  // Check IR sensor state
+  pillDetected = checkIRSensor();
+
+  // Detect state change
+  if (pillDetected != previousPillState)
+  {
+    if (pillDetected)
+    {
+      Serial.println("Pill detected by IR sensor!");
+      // Add any actions you want to take when a pill is detected
+    }
+    else
+    {
+      Serial.println("Pill removed or not detected!");
+      // Add any actions you want to take when a pill is removed or not detected
+    }
+
+    // Update previous state
+    previousPillState = pillDetected;
+  }
+
   // Add your logic here to control the actuators based on Firebase data or other inputs
+  delay(100); // Short delay to prevent too frequent readings
 }
