@@ -28,6 +28,19 @@
 // IR sensor pin
 #define IR_SENSOR_PIN 23 // GPIO23 for IR sensor input
 
+// Buzzer pin
+#define BUZZER_PIN 13 // GPIO13 for buzzer
+
+// Buzzer frequencies for different tones
+#define NOTE_C5 523
+#define NOTE_D5 587
+#define NOTE_E5 659
+#define NOTE_F5 698
+#define NOTE_G5 784
+#define NOTE_A5 880
+#define NOTE_B5 988
+#define NOTE_C6 1047
+
 // NTP server settings
 const char *ntpServer1 = "pool.ntp.org";
 const char *ntpServer2 = "time.nist.gov";
@@ -98,6 +111,121 @@ void streamTimeoutCallback(bool timeout);
 void printStoredMedications();
 void updatePillDispenserStatus(bool dispenseSuccessful);
 void checkScheduledMedications();
+
+// Buzzer function prototypes
+void initializeBuzzer();
+void beep(int frequency, int duration);
+void playSuccessTone();
+void playErrorTone();
+void playMedicationReadyTone();
+void playReminderTone();
+void playStartupTone();
+void testBuzzer();
+
+// Buzzer Functions
+void initializeBuzzer()
+{
+    pinMode(BUZZER_PIN, OUTPUT);
+    digitalWrite(BUZZER_PIN, LOW); // Ensure buzzer is off initially
+    Serial.println("Buzzer initialized");
+}
+
+// Simple beep function
+void beep(int frequency, int duration)
+{
+    tone(BUZZER_PIN, frequency, duration);
+    delay(duration);
+    noTone(BUZZER_PIN);
+}
+
+// Success tone - ascending notes
+void playSuccessTone()
+{
+    Serial.println("Playing success tone");
+    beep(NOTE_C5, 100);
+    delay(50);
+    beep(NOTE_E5, 100);
+    delay(50);
+    beep(NOTE_G5, 100);
+    delay(50);
+    beep(NOTE_C6, 300);
+}
+
+// Error tone - descending notes
+void playErrorTone()
+{
+    Serial.println("Playing error tone");
+    beep(NOTE_C6, 100);
+    delay(50);
+    beep(NOTE_A5, 100);
+    delay(50);
+    beep(NOTE_F5, 100);
+    delay(50);
+    beep(NOTE_C5, 300);
+}
+
+// Medication ready tone - two beeps
+void playMedicationReadyTone()
+{
+    Serial.println("Playing medication ready tone");
+    beep(NOTE_G5, 300);
+    delay(200);
+    beep(NOTE_G5, 500);
+}
+
+// Reminder tone - alternating pattern
+void playReminderTone()
+{
+    Serial.println("Playing reminder tone");
+    for (int i = 0; i < 3; i++)
+    {
+        beep(NOTE_C5, 200);
+        delay(200);
+        beep(NOTE_G5, 200);
+        delay(200);
+    }
+}
+
+// Startup melody
+void playStartupTone()
+{
+    Serial.println("Playing startup tone");
+    int startupMelody[] = {NOTE_C5, NOTE_E5, NOTE_G5, NOTE_C6};
+    int noteDurations[] = {100, 100, 100, 300};
+
+    for (int i = 0; i < 4; i++)
+    {
+        beep(startupMelody[i], noteDurations[i]);
+        delay(50);
+    }
+}
+
+// Test buzzer function
+void testBuzzer()
+{
+    Serial.println("Testing buzzer...");
+
+    // Play startup tone
+    playStartupTone();
+    delay(1000);
+
+    // Play success tone
+    playSuccessTone();
+    delay(1000);
+
+    // Play error tone
+    playErrorTone();
+    delay(1000);
+
+    // Play medication ready tone
+    playMedicationReadyTone();
+    delay(1000);
+
+    // Play reminder tone
+    playReminderTone();
+
+    Serial.println("Buzzer test completed");
+}
 
 // Function to update current pill dispenser status in Firebase
 void updatePillDispenserStatus(bool dispenseSuccessful)
@@ -200,6 +328,15 @@ void checkScheduledMedications()
             Serial.print("Time to dispense: ");
             Serial.println(medications[i].name);
 
+            // First play the medication reminder tone
+            Serial.println("Playing medication alert tone...");
+            playMedicationReadyTone();
+
+            // Wait for 5 seconds before starting the dispensing process
+            // This gives the user time to approach the device after hearing the alert
+            Serial.println("Waiting 5 seconds before dispensing...");
+            delay(5000);
+
             // Perform the dispensing sequence
             rotateChamberTo(medications[i].chamber);
             delay(1000);
@@ -229,6 +366,9 @@ void checkScheduledMedications()
                 delay(2000);
                 moveTrayBackward();
 
+                // Play success tone for successful dispensing
+                playSuccessTone();
+
                 // Update Firebase with successful dispense
                 updatePillDispenserStatus(true);
                 // We don't have medication IDs stored locally, so we can't update the specific medication
@@ -237,6 +377,8 @@ void checkScheduledMedications()
             else
             {
                 Serial.println("Pill dispensing failed - no pill detected!");
+                // Play error tone for failed dispensing
+                playErrorTone();
                 updatePillDispenserStatus(false);
             }
         }
@@ -480,7 +622,10 @@ void testActuators()
 {
     Serial.println("Starting actuator test sequence...");
 
-    // Test IR sensor first
+    // Test buzzer first
+    testBuzzer();
+
+    // Test IR sensor
     testIRSensor();
 
     // Test chamber rotation
@@ -695,9 +840,13 @@ void setup()
 
     // Initialize components
     initializeActuators();
+    initializeBuzzer(); // Initialize the buzzer
     connectToWiFi();
     setupNTP();
     setupFirebase();
+
+    // Play startup tone to indicate system is ready
+    playStartupTone();
 
     // Update pillDispenser status to show it's online
     if (signupOK)
@@ -724,6 +873,8 @@ unsigned long lastCheckTime = 0;
 unsigned long checkInterval = 30000; // Check every 30 seconds
 unsigned long lastStatusUpdateTime = 0;
 unsigned long statusUpdateInterval = 60000; // Update status every minute
+unsigned long lastReminderTime = 0;
+unsigned long reminderInterval = 300000; // Reminder every 5 minutes if pill not taken
 
 void loop()
 {
