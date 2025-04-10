@@ -1,298 +1,135 @@
-#include <Arduino.h>
-#include <WiFi.h>
-#include <Firebase_ESP_Client.h>
-#include "addons/TokenHelper.h"
-#include "addons/RTDBHelper.h"
-#include <ArduinoJson.h>
+// Servo and motor control pins for ESP32
+#include <ESP32Servo.h>
 
-// WiFi credentials
-#define WIFI_SSID "Hydra_Wlan$0"
-#define WIFI_PASSWORD "Scienhac01"
+// Servo pins - using GPIO numbers
+#define CHAMBER_SERVO_PIN 18  // GPIO18 for rotation servo
+#define DISPENSE_SERVO_PIN 19 // GPIO19 for dispense servo
 
-// Firebase project credentials
-#define API_KEY "AIzaSyAnanb7oZ0LmlQrjb31NJLIxLi_GKPjBB4"
-#define DATABASE_URL "https://iot-prj-ac910-default-rtdb.firebaseio.com/"
+// DC motor pins
+#define MOTOR_FORWARD_PIN 25  // GPIO25 for motor forward
+#define MOTOR_BACKWARD_PIN 26 // GPIO26 for motor backward
+#define MOTOR_ENABLE_PIN 27   // GPIO27 for motor PWM control
 
-// Define Firebase Data objects
-FirebaseData fbdo1;
-FirebaseData fbdo2;
-FirebaseAuth auth;
-FirebaseConfig config;
+// Servo objects
+Servo chamberServo;
+Servo dispenseServo;
 
-// Track if signup was successful
-bool signupOK = false;
-
-// Structure to store medication data
-struct Medication
+// Function to initialize servos and motor
+void initializeActuators()
 {
-  int chamber;
-  bool dispensed;
-  int hour;
-  int minute;
-  String name;
-  String lastDispensed;
-};
+  // Allocate ESP32 timers for servo control
+  ESP32PWM::allocateTimer(0);
+  ESP32PWM::allocateTimer(1);
+  ESP32PWM::allocateTimer(2);
+  ESP32PWM::allocateTimer(3);
 
-// Array to store medications (simplified approach)
-Medication medications[10]; // Assuming max 10 medications
-int medicationCount = 0;
+  chamberServo.setPeriodHertz(50);  // Standard 50Hz servo
+  dispenseServo.setPeriodHertz(50); // Standard 50Hz servo
 
-// Structure to store pill dispenser status
-struct PillDispenserStatus
-{
-  bool isOnline;
-  bool lastDispenseSuccessful;
-  String lastDispenseTime;
-  String lastSeen;
-} pillDispenserStatus;
+  chamberServo.attach(CHAMBER_SERVO_PIN, 500, 2400); // Adjust min/max pulse width if needed
+  dispenseServo.attach(DISPENSE_SERVO_PIN, 500, 2400);
 
-// Stream callback function to handle real-time updates for /medications
-void medicationsStreamCallback(FirebaseStream data)
-{
-  Serial.println("------------------------------------");
-  Serial.println("Medications Stream Data Received:");
-  Serial.println("Path: " + data.dataPath());
-  Serial.println("Type: " + data.dataType());
-  Serial.println("Data: " + data.stringData());
+  // Set initial positions for servos
+  chamberServo.write(0);   // Start at position 0
+  dispenseServo.write(90); // Neutral position for dispensing servo
 
-  if (data.dataType() == "json")
-  {
-    Serial.println("JSON Data:");
-    Serial.println(data.stringData());
+  // Configure motor pins
+  pinMode(MOTOR_FORWARD_PIN, OUTPUT);
+  pinMode(MOTOR_BACKWARD_PIN, OUTPUT);
+  pinMode(MOTOR_ENABLE_PIN, OUTPUT);
 
-    // Always clear previous data and replace with new data
-    medicationCount = 0;
+  // Stop the motor initially
+  digitalWrite(MOTOR_FORWARD_PIN, LOW);
+  digitalWrite(MOTOR_BACKWARD_PIN, LOW);
+  analogWrite(MOTOR_ENABLE_PIN, 0);
 
-    StaticJsonDocument<1024> doc;
-    DeserializationError error = deserializeJson(doc, data.stringData());
-
-    if (!error)
-    {
-      // Check if the data is a full medications list or a single medication
-      if (data.dataPath() == "/" || data.dataPath() == "")
-      {
-        // Process as a complete medications list
-        JsonObject jsonMedications = doc.as<JsonObject>();
-
-        for (JsonPair kv : jsonMedications)
-        {
-          if (medicationCount < 10) // Prevent array overflow
-          {
-            JsonObject med = kv.value().as<JsonObject>();
-
-            medications[medicationCount].chamber = med["chamber"].as<int>();
-            medications[medicationCount].dispensed = med["dispensed"].as<bool>();
-            medications[medicationCount].hour = med["hour"].as<int>();
-            medications[medicationCount].minute = med["minute"].as<int>();
-            medications[medicationCount].name = med["name"].as<String>();
-            medications[medicationCount].lastDispensed = med["lastDispensed"].as<String>();
-
-            String medId = kv.key().c_str();
-            Serial.println("Stored medication: " + medId);
-            Serial.print("Chamber: ");
-            Serial.println(medications[medicationCount].chamber);
-            Serial.print("Name: ");
-            Serial.println(medications[medicationCount].name);
-
-            medicationCount++;
-          }
-        }
-      }
-      else
-      {
-        // This is a single medication - still replace everything
-        // Clear any previous data
-        medicationCount = 1;
-
-        // Store just this medication
-        medications[0].chamber = doc["chamber"].as<int>();
-        medications[0].dispensed = doc["dispensed"].as<bool>();
-        medications[0].hour = doc["hour"].as<int>();
-        medications[0].minute = doc["minute"].as<int>();
-        medications[0].name = doc["name"].as<String>();
-        medications[0].lastDispensed = doc["lastDispensed"].as<String>();
-
-        Serial.println("Stored single medication");
-        Serial.print("Chamber: ");
-        Serial.println(medications[0].chamber);
-        Serial.print("Name: ");
-        Serial.println(medications[0].name);
-      }
-
-      Serial.print("Total medications stored: ");
-      Serial.println(medicationCount);
-    }
-    else
-    {
-      Serial.print("JSON deserialization failed: ");
-      Serial.println(error.c_str());
-    }
-  }
-  Serial.println("------------------------------------");
+  Serial.println("Actuators initialized");
 }
 
-// Stream callback function for /pillDispenser
-void pillDispenserStreamCallback(FirebaseStream data)
+// Function to rotate the chamber to the desired compartment
+void rotateChamberTo(int compartment)
 {
-  Serial.println("------------------------------------");
-  Serial.println("Pill Dispenser Stream Data Received:");
-  Serial.println("Path: " + data.dataPath());
-  Serial.println("Type: " + data.dataType());
-  Serial.println("Data: " + data.stringData());
+  // Assuming 6 compartments (0-5), each 60 degrees apart
+  // Ensure compartment is in range
+  if (compartment < 0)
+    compartment = 0;
+  if (compartment > 5)
+    compartment = 5;
 
-  if (data.dataType() == "json")
-  {
-    StaticJsonDocument<512> doc;
-    DeserializationError error = deserializeJson(doc, data.stringData());
-    if (!error)
-    {
-      // Simply replace all pill dispenser data with new data
-      pillDispenserStatus.isOnline = doc["isOnline"].as<bool>();
-      pillDispenserStatus.lastDispenseSuccessful = doc["lastDispenseSuccessful"].as<bool>();
-      pillDispenserStatus.lastDispenseTime = doc["lastDispenseTime"].as<String>();
-      pillDispenserStatus.lastSeen = doc["lastSeen"].as<String>();
+  int angle = compartment * 60; // Calculate the angle for the desired compartment
+  Serial.print("Rotating chamber to compartment: ");
+  Serial.print(compartment);
+  Serial.print(" (angle: ");
+  Serial.print(angle);
+  Serial.println(" degrees)");
 
-      Serial.println("Pill Dispenser Status Updated:");
-      Serial.print("isOnline: ");
-      Serial.println(pillDispenserStatus.isOnline ? "true" : "false");
-      Serial.print("lastDispenseSuccessful: ");
-      Serial.println(pillDispenserStatus.lastDispenseSuccessful ? "true" : "false");
-      Serial.print("lastDispenseTime: ");
-      Serial.println(pillDispenserStatus.lastDispenseTime);
-      Serial.print("lastSeen: ");
-      Serial.println(pillDispenserStatus.lastSeen);
-    }
-    else
-    {
-      Serial.print("JSON deserialization failed: ");
-      Serial.println(error.c_str());
-    }
-  }
-  Serial.println("------------------------------------");
+  chamberServo.write(angle);
+  delay(1000); // Wait for the servo to reach the position
 }
 
-// Function to print all stored medications
-void printStoredMedications()
+// Function to dispense a pill
+void dispensePill()
 {
-  Serial.println("------------------------------------");
-  Serial.println("CURRENT MEDICATIONS IN MEMORY:");
-
-  if (medicationCount == 0)
-  {
-    Serial.println("No medications stored.");
-  }
-  else
-  {
-    for (int i = 0; i < medicationCount; i++)
-    {
-      Serial.print("Medication #");
-      Serial.println(i + 1);
-      Serial.print("Chamber: ");
-      Serial.println(medications[i].chamber);
-      Serial.print("Dispensed: ");
-      Serial.println(medications[i].dispensed ? "true" : "false");
-      Serial.print("Hour: ");
-      Serial.println(medications[i].hour);
-      Serial.print("Minute: ");
-      Serial.println(medications[i].minute);
-      Serial.print("Name: ");
-      Serial.println(medications[i].name);
-      Serial.print("Last Dispensed: ");
-      Serial.println(medications[i].lastDispensed);
-      Serial.println();
-    }
-  }
-  Serial.println("------------------------------------");
+  Serial.println("Dispensing pill...");
+  dispenseServo.write(0);  // Rotate to dispense position
+  delay(1000);             // Wait for the pill to drop
+  dispenseServo.write(90); // Return to neutral position
+  delay(500);              // Wait for the servo to stabilize
 }
 
-void streamTimeoutCallback(bool timeout)
+// Function to move the tray forward
+void moveTrayForward()
 {
-  if (timeout)
-    Serial.println("Stream timeout, resuming...");
+  Serial.println("Moving tray forward...");
+  digitalWrite(MOTOR_FORWARD_PIN, HIGH);
+  digitalWrite(MOTOR_BACKWARD_PIN, LOW);
+  analogWrite(MOTOR_ENABLE_PIN, 255); // Full speed
+  delay(2000);                        // Adjust delay based on the distance to move
+  analogWrite(MOTOR_ENABLE_PIN, 0);   // Stop the motor
 }
 
-void setup()
+// Function to move the tray backward
+void moveTrayBackward()
 {
-  Serial.begin(115200);
+  Serial.println("Moving tray backward...");
+  digitalWrite(MOTOR_FORWARD_PIN, LOW);
+  digitalWrite(MOTOR_BACKWARD_PIN, HIGH);
+  analogWrite(MOTOR_ENABLE_PIN, 255); // Full speed
+  delay(2000);                        // Adjust delay based on the distance to move
+  analogWrite(MOTOR_ENABLE_PIN, 0);   // Stop the motor
+}
 
-  // Connect to WiFi
-  Serial.print("Connecting to WiFi");
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  while (WiFi.status() != WL_CONNECTED)
+// Function to move the tray back and forth as a test sequence
+void testActuators()
+{
+  Serial.println("Starting actuator test sequence...");
+
+  // Test chamber rotation
+  for (int i = 0; i <= 5; i++)
   {
-    Serial.print(".");
+    rotateChamberTo(i);
     delay(500);
   }
-  Serial.println("\nWiFi connected!");
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
 
-  // Configure Firebase
-  config.api_key = API_KEY;
-  config.database_url = DATABASE_URL;
-  config.token_status_callback = tokenStatusCallback;
+  // Return to chamber 0
+  rotateChamberTo(0);
+  delay(1000);
 
-  // Anonymous sign-up
-  if (Firebase.signUp(&config, &auth, "", ""))
-  {
-    Serial.println("Anonymous sign-up successful!");
-    signupOK = true;
-  }
-  else
-  {
-    Serial.printf("Anonymous sign-up failed: %s\n", config.signer.signupError.message.c_str());
-  }
+  // Test pill dispensing
+  dispensePill();
+  delay(1000);
 
-  Firebase.begin(&config, &auth);
-  Firebase.reconnectWiFi(true);
+  // Test tray movement
+  moveTrayForward();
+  delay(1000);
+  moveTrayBackward();
 
-  // Wait for Firebase to be ready
-  while (!Firebase.ready() && signupOK)
-  {
-    Serial.print(".");
-    delay(1000);
-  }
-  Serial.println();
-
-  if (signupOK)
-  {
-    // Begin streaming the /medications path
-    if (!Firebase.RTDB.beginStream(&fbdo1, "/medications"))
-    {
-      Serial.print("Failed to begin medications stream: ");
-      Serial.println(fbdo1.errorReason().c_str());
-    }
-    else
-    {
-      Serial.println("Medications stream started!");
-      Firebase.RTDB.setStreamCallback(&fbdo1, medicationsStreamCallback, streamTimeoutCallback);
-    }
-
-    // Begin streaming the /pillDispenser path
-    if (!Firebase.RTDB.beginStream(&fbdo2, "/pillDispenser"))
-    {
-      Serial.print("Failed to begin pillDispenser stream: ");
-      Serial.println(fbdo2.errorReason().c_str());
-    }
-    else
-    {
-      Serial.println("Pill dispenser stream started!");
-      Firebase.RTDB.setStreamCallback(&fbdo2, pillDispenserStreamCallback, streamTimeoutCallback);
-    }
-  }
-}
-
-void loop()
-{
-  if (signupOK && Firebase.ready())
-  {
-    // Check connection and print stored data periodically
-    if (millis() % 30000 == 0)
-    {
-      Serial.println("Firebase connection is active");
-      printStoredMedications();
-    }
-  }
-
-  delay(100);
+  Serial.println("Test sequence completed");
+  // ** Example usage:
+  // rotateChamberTo(medications[i].chamber); // Rotate to the correct chamber
+  // delay(1000);
+  // dispensePill();    // Dispense the pill
+  // moveTrayForward(); // Move tray forward to collect pill
+  // delay(2000);
+  // moveTrayBackward(); // Return tray to starting position
 }
